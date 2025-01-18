@@ -5,354 +5,348 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
-// NDT7 data classes
+import 'package:isolates_helper/isolates_helper.dart';
+
 import 'ndt7_measurement.dart';
 import 'universal_websocket.dart';
 import 'mlab_discovery.dart';
 
-// For isolate / worker logic:
-import 'package:isolates_helper/isolates_helper.dart';
+/// We'll produce client-based measurements every 250 ms
+const Duration clientMeasurementInterval = Duration(milliseconds: 250);
 
-/// The function the worker uses to generate random data of the requested size.
-/// We use a top-level function so that `isolates_helper` can create a web worker / isolate.
+/// The maximum single binary message size (16 MiB).
+const int maxMessageSize = 1 << 24;
+
+/// We'll double the chunk size if currentSize < totalSoFar / scalingFraction.
+const int scalingFraction = 16;
+
+/// The initial message size for upload (8 KiB).
+const int initialUploadMessageSize = 1 << 13;
+
+/// The worker function for generating random data in an isolate/worker.
 @isolatesHelperWorker
 List<int> makeRandomPayloadWorker(List<int> params) {
-  final size = params[0];
+  final size = params[0] as int;
   final rng = Random();
-  final data = List<int>.generate(size, (_) => 65 + rng.nextInt(57));
-  return data;
+  return List<int>.generate(size, (_) => 65 + rng.nextInt(57));
 }
 
-/// Default subprotocol required by ndt7
 const ndt7WebSocketSubProtocol = 'net.measurementlab.ndt.v7';
+const defaultIsolateConcurrency = 1;
 
-/// Default path for download/upload
-const ndt7DownloadPath = '/ndt/v7/download';
-const ndt7UploadPath = '/ndt/v7/upload';
-
-/// Default durations
-const defaultDownloadTestDuration = Duration(seconds: 15);
-const defaultUploadTestDuration = Duration(seconds: 10);
-
-/// Maximum message size = 16 MiB
-const maxMessageSize = 1 << 24;
-
-/// Initial upload chunk size = 8 KiB
-const initialUploadMessageSize = 1 << 13;
-
-/// We'll double the chunk if chunkSize < totalSoFar / scalingFraction
-const scalingFraction = 16;
-
-/// We'll produce "client-based" measurements every 250 ms
-const clientMeasurementInterval = Duration(milliseconds: 250);
-
-/// If no scheme is provided, use 'wss'
-const defaultScheme = 'wss';
-
-/// A pure-Dart NDT7 client supporting the isolates_helper approach for random data generation.
-class Ndt7Client {
-  final String host;
+class Ndt7Config {
+  final String? fullDownloadUrl;
+  final String? fullUploadUrl;
+  final String? host;
   final String scheme;
   final String queryParams;
   final Duration downloadTestDuration;
   final Duration uploadTestDuration;
-  final String? _fullDownloadUrl;
-  final String? _fullUploadUrl;
+  final int concurrency;
 
-  // We'll store an IsolatesHelper instance here, so we can reuse it for the entire test.
-  // concurrency=1 is enough to saturate most links, but you can try 2 or 3.
-  final IsolatesHelper isolates = IsolatesHelper(
-    concurrent: 1,
-    // Optional: 'worker' if you want custom worker name, or isDebug
-  );
-
-  Ndt7Client({
-    required this.host,
-    this.scheme = defaultScheme,
+  Ndt7Config({
+    this.fullDownloadUrl,
+    this.fullUploadUrl,
+    this.host,
+    this.scheme = 'wss',
     this.queryParams = '',
-    this.downloadTestDuration = defaultDownloadTestDuration,
-    this.uploadTestDuration = defaultUploadTestDuration,
-  })  : _fullDownloadUrl = null,
-        _fullUploadUrl = null;
+    this.downloadTestDuration = const Duration(seconds: 15),
+    this.uploadTestDuration = const Duration(seconds: 10),
+    this.concurrency = defaultIsolateConcurrency,
+  });
+}
 
-  Ndt7Client._withFullUrls({
-    required String fullDownloadUrl,
-    required String fullUploadUrl,
-    required String fallbackHost,
-    this.downloadTestDuration = defaultDownloadTestDuration,
-    this.uploadTestDuration = defaultUploadTestDuration,
-  })  : _fullDownloadUrl = fullDownloadUrl,
-        _fullUploadUrl = fullUploadUrl,
-        host = fallbackHost,
-        scheme = defaultScheme,
-        queryParams = '';
+class Ndt7TestResult {
+  final Stream<Ndt7Measurement> measurements;
+  final Future<Ndt7Summary> summary;
+  Ndt7TestResult(this.measurements, this.summary);
+}
 
-  /// Legacy approach that only obtains a host from older M-Lab locate
+class Ndt7Client {
+  final Ndt7Config config;
+  final IsolatesHelper isolates;
+
+  Ndt7Client({required this.config})
+      : isolates = IsolatesHelper(concurrent: config.concurrency);
+
   static Future<Ndt7Client> withMlab({
     String userAgent = 'ndt7-dart/1.0',
-    String scheme = defaultScheme,
+    String scheme = 'wss',
     String queryParams = '',
-    Duration downloadTestDuration = defaultDownloadTestDuration,
-    Duration uploadTestDuration = defaultUploadTestDuration,
+    Duration downloadTestDuration = const Duration(seconds: 15),
+    Duration uploadTestDuration = const Duration(seconds: 10),
+    int concurrency = defaultIsolateConcurrency,
   }) async {
     final discoveredHost =
         await MLabDiscovery.discoverServer(userAgent: userAgent);
-    return Ndt7Client(
+    final cfg = Ndt7Config(
       host: discoveredHost,
       scheme: scheme,
       queryParams: queryParams,
       downloadTestDuration: downloadTestDuration,
       uploadTestDuration: uploadTestDuration,
+      concurrency: concurrency,
     );
+    return Ndt7Client(config: cfg);
   }
 
-  /// Modern approach that obtains full wss:// URLs (with tokens) from M-Lab locate
   static Future<Ndt7Client> withMlabUrls({
     String userAgent = 'ndt7-dart/1.0',
-    Duration downloadTestDuration = defaultDownloadTestDuration,
-    Duration uploadTestDuration = defaultUploadTestDuration,
+    Duration downloadTestDuration = const Duration(seconds: 15),
+    Duration uploadTestDuration = const Duration(seconds: 10),
+    int concurrency = defaultIsolateConcurrency,
   }) async {
     final urls =
         await MLabDiscovery.discoverServerWithUrls(userAgent: userAgent);
-    return Ndt7Client._withFullUrls(
+    final cfg = Ndt7Config(
       fullDownloadUrl: urls.downloadUrl,
       fullUploadUrl: urls.uploadUrl,
-      fallbackHost: urls.fqdn ?? '',
+      host: urls.fqdn,
+      scheme: 'wss',
+      queryParams: '',
       downloadTestDuration: downloadTestDuration,
       uploadTestDuration: uploadTestDuration,
+      concurrency: concurrency,
     );
+    return Ndt7Client(config: cfg);
   }
 
-  // ----------------------------------------------------------------------------
-  // Download test: normal approach, not using isolates for random data,
-  // because the server is the one sending data in download.
-  // ----------------------------------------------------------------------------
-  Stream<Ndt7Measurement> startDownload() async* {
-    final uri =
-        _fullDownloadUrl ?? '$scheme://$host$ndt7DownloadPath$queryParams';
-    print('[startDownload] => $uri');
+  // ---------------------------------------------------------------------------
+  // Download
+  // ---------------------------------------------------------------------------
+  Ndt7TestResult startDownloadTest() {
+    final controller = StreamController<Ndt7Measurement>.broadcast();
+    final futureSummary = _runDownload(controller);
+    return Ndt7TestResult(controller.stream, futureSummary);
+  }
 
-    final controller = StreamController<Ndt7Measurement>();
-    final cutoffTimer = Timer(downloadTestDuration, () {
-      if (!controller.isClosed) controller.close();
-    });
+  Future<Ndt7Summary> _runDownload(
+      StreamController<Ndt7Measurement> ctrl) async {
+    final aggregator = _MeasurementAggregator(test: 'download');
+    final doneCompleter = Completer<Ndt7Summary>();
+
+    unawaited(_startDownload(ctrl, aggregator).then((_) {
+      doneCompleter.complete(aggregator.finalize());
+    }).catchError((err, st) {
+      doneCompleter.completeError(err, st);
+    }));
+
+    return doneCompleter.future;
+  }
+
+  Future<void> _startDownload(
+    StreamController<Ndt7Measurement> ctrl,
+    _MeasurementAggregator aggregator,
+  ) async {
+    final downloadUrl = config.fullDownloadUrl ??
+        '${config.scheme}://${config.host}/ndt/v7/download${config.queryParams}';
 
     try {
-      // Make sure the isolates are started if we want them for something else
       await isolates.ensureStarted;
 
-      final socket =
-          await universalConnect(uri, protocols: [ndt7WebSocketSubProtocol]);
-      print('[startDownload] WebSocket connected OK');
+      final socket = await universalConnect(downloadUrl,
+          protocols: [ndt7WebSocketSubProtocol]);
+      aggregator.log('Download WebSocket connected: $downloadUrl');
 
-      // Listen for server messages (binary => measure, text => parse JSON)
-      _listenForDownload(socket, controller);
+      final cutoffTimer = Timer(config.downloadTestDuration, () {
+        if (!ctrl.isClosed) ctrl.close();
+      });
 
       final startTime = DateTime.now();
       int totalBytes = 0;
 
+      // Listen for server messages
+      _listenDownload(socket, ctrl, aggregator);
+
       // 250ms "client-based" measurement
       final measureTimer = Timer.periodic(clientMeasurementInterval, (_) {
-        if (!controller.isClosed) {
-          final elapsedUs = DateTime.now().difference(startTime).inMicroseconds;
-          final meas = Ndt7Measurement(
-            appInfo:
-                AppInfo(elapsedTimeMicros: elapsedUs, numBytes: totalBytes),
-            origin: 'client',
-            test: 'download',
-          );
-          controller.add(meas);
-        }
+        if (ctrl.isClosed) return;
+        final elapsedUs = DateTime.now().difference(startTime).inMicroseconds;
+        aggregator.addClientMeasurement(
+          test: 'download',
+          elapsedUs: elapsedUs,
+          totalBytes: totalBytes,
+          ctrl: ctrl,
+        );
       });
 
-      yield* controller.stream
-          .handleError((err, st) {
-            print('[startDownload] error => $err');
-            if (!controller.isClosed) {
-              controller.add(Ndt7Measurement(
-                error: err.toString(),
-                stackTrace: st?.toString(),
-                test: 'download',
-              ));
-              controller.close();
-            }
-          })
-          .map((m) {
-            // If it's a synthetic event for counting binary
-            if (m.internalBinaryDownloadCount != null) {
-              totalBytes += m.internalBinaryDownloadCount!;
-              return Ndt7Measurement.empty();
-            }
-            return m;
-          })
-          .where((m) => !m.isEmpty())
-          .doOnDone(() {
-            print('[startDownload] done => cleanup');
-            measureTimer.cancel();
-            cutoffTimer.cancel();
-            socket.close();
-          })
-          .doOnCancel(() {
-            print('[startDownload] canceled => cleanup');
-            measureTimer.cancel();
-            cutoffTimer.cancel();
-            socket.close();
-          });
+      // Wait for the ctrl to close
+      await for (final m in ctrl.stream) {
+        if (m.internalBinaryDownloadCount != null) {
+          totalBytes += m.internalBinaryDownloadCount!;
+        }
+      }
+
+      aggregator.log('Download finished. totalBytes=$totalBytes');
+      measureTimer.cancel();
+      cutoffTimer.cancel();
+      socket.close();
     } catch (err, st) {
-      yield Ndt7Measurement(
-        error: err.toString(),
-        stackTrace: st.toString(),
-        test: 'download',
-      );
+      aggregator.log('Download exception => $err');
+      ctrl.add(Ndt7Measurement(
+          error: err.toString(), stackTrace: st.toString(), test: 'download'));
+      ctrl.close();
     }
   }
 
-  // ----------------------------------------------------------------------------
-  // Upload test using isolates_helper for random data generation
-  // ----------------------------------------------------------------------------
-  Stream<Ndt7Measurement> startUpload() async* {
-    final uri = _fullUploadUrl ?? '$scheme://$host$ndt7UploadPath$queryParams';
-    print('[startUpload] => $uri');
+  // ---------------------------------------------------------------------------
+  // Upload
+  // ---------------------------------------------------------------------------
+  Ndt7TestResult startUploadTest() {
+    final controller = StreamController<Ndt7Measurement>.broadcast();
+    final futureSummary = _runUpload(controller);
+    return Ndt7TestResult(controller.stream, futureSummary);
+  }
 
-    final controller = StreamController<Ndt7Measurement>();
-    final cutoffTimer = Timer(uploadTestDuration, () {
-      if (!controller.isClosed) controller.close();
-    });
+  Future<Ndt7Summary> _runUpload(StreamController<Ndt7Measurement> ctrl) async {
+    final aggregator = _MeasurementAggregator(test: 'upload');
+    final doneCompleter = Completer<Ndt7Summary>();
+
+    unawaited(_startUpload(ctrl, aggregator).then((_) {
+      doneCompleter.complete(aggregator.finalize());
+    }).catchError((err, st) {
+      doneCompleter.completeError(err, st);
+    }));
+
+    return doneCompleter.future;
+  }
+
+  Future<void> _startUpload(
+    StreamController<Ndt7Measurement> ctrl,
+    _MeasurementAggregator aggregator,
+  ) async {
+    final uploadUrl = config.fullUploadUrl ??
+        '${config.scheme}://${config.host}/ndt/v7/upload${config.queryParams}';
 
     try {
-      // Ensure the worker is started
       await isolates.ensureStarted;
 
-      final socket =
-          await universalConnect(uri, protocols: [ndt7WebSocketSubProtocol]);
-      print('[startUpload] WebSocket connected OK');
+      final socket = await universalConnect(uploadUrl,
+          protocols: [ndt7WebSocketSubProtocol]);
+      aggregator.log('Upload WebSocket connected: $uploadUrl');
 
-      // Listen for server messages (server's "counterflow" text messages).
-      _listenForUpload(socket, controller);
+      final cutoffTimer = Timer(config.uploadTestDuration, () {
+        if (!ctrl.isClosed) ctrl.close();
+      });
 
       final startTime = DateTime.now();
+      bool keepRunning = true;
       int totalSoFar = 0;
       int currentSize = initialUploadMessageSize;
 
-      // We'll do a saturating loop that continuously requests random data from the isolate
-      // and sends it. We'll run in a microtask approach so we don't block the event loop entirely.
-      bool keepRunning = true;
+      // Listen for server messages
+      _listenUpload(socket, ctrl, aggregator);
 
+      // The saturating loop
       void uploadLoop() async {
-        while (keepRunning && !controller.isClosed) {
-          // 1) if we passed test time, break
-          if (DateTime.now().difference(startTime) >= uploadTestDuration) {
-            print('[uploadLoop] reached uploadTestDuration => closing');
-            if (!controller.isClosed) controller.close();
+        while (keepRunning) {
+          // If test time is done or ctrl closed, break
+          if (ctrl.isClosed ||
+              DateTime.now().difference(startTime) >=
+                  config.uploadTestDuration) {
+            aggregator
+                .log('Reached uploadTestDuration or ctrl closed => break');
             break;
           }
 
-          // 2) get random payload from worker
-          //    We'll pass [currentSize] as the param list
-          List<int>? chunk;
+          // 1) get random data from isolate
+          List<int> chunk;
           try {
             chunk = await isolates.compute(
               makeRandomPayloadWorker,
               [currentSize],
-              workerFunction: 'makeRandomPayloadWorker', // optional
+              workerFunction: 'makeRandomPayloadWorker',
             );
-          } catch (err) {
-            print('[uploadLoop] error getting random data => $err');
-            if (!controller.isClosed) {
-              controller
-                  .add(Ndt7Measurement(error: err.toString(), test: 'upload'));
-              controller.close();
+          } catch (err, st) {
+            aggregator.log('uploadLoop random error => $err');
+            if (!ctrl.isClosed) {
+              ctrl.add(Ndt7Measurement(
+                  error: err.toString(),
+                  stackTrace: st?.toString(),
+                  test: 'upload'));
+              ctrl.close();
             }
             break;
           }
 
-          // 3) send that chunk to the server
+          // If the controller closed while we were computing random data, stop.
+          if (ctrl.isClosed) {
+            aggregator.log('Controller closed, stopping uploadLoop');
+            break;
+          }
+
+          // 2) send it
           try {
             socket.send(Uint8List.fromList(chunk));
           } catch (sendErr) {
-            print('[uploadLoop] socket.send error => $sendErr');
-            if (!controller.isClosed) {
-              controller.add(
+            aggregator.log('socket.send error => $sendErr');
+            if (!ctrl.isClosed) {
+              ctrl.add(
                   Ndt7Measurement(error: sendErr.toString(), test: 'upload'));
-              controller.close();
+              ctrl.close();
             }
             break;
           }
 
-          // 4) update totalSoFar
           totalSoFar += currentSize;
 
-          // 5) scale chunk if needed
+          // 3) scale up
           if (currentSize < maxMessageSize) {
             if (currentSize < (totalSoFar ~/ scalingFraction)) {
               currentSize *= 2;
-              if (currentSize > maxMessageSize) currentSize = maxMessageSize;
+              if (currentSize > maxMessageSize) {
+                currentSize = maxMessageSize;
+              }
             }
           }
 
-          // yield back so we don't block everything
+          // yield to avoid blocking the UI event loop
           await Future(() {});
         }
       }
 
-      uploadLoop(); // start in the background
+      uploadLoop();
 
-      // Meanwhile, produce "client-based" measurement every 250ms
+      // 250ms client-based measurement
       final measureTimer = Timer.periodic(clientMeasurementInterval, (_) {
-        if (!controller.isClosed) {
-          final elapsedUs = DateTime.now().difference(startTime).inMicroseconds;
-          final meas = Ndt7Measurement(
-            appInfo:
-                AppInfo(elapsedTimeMicros: elapsedUs, numBytes: totalSoFar),
-            origin: 'client',
-            test: 'upload',
-          );
-          controller.add(meas);
-        }
+        if (ctrl.isClosed) return;
+        final elapsedUs = DateTime.now().difference(startTime).inMicroseconds;
+        aggregator.addClientMeasurement(
+          test: 'upload',
+          elapsedUs: elapsedUs,
+          totalBytes: totalSoFar,
+          ctrl: ctrl,
+        );
       });
 
-      yield* controller.stream.handleError((err, st) {
-        print('[startUpload] error => $err');
-        if (!controller.isClosed) {
-          controller.add(Ndt7Measurement(
-            error: err.toString(),
-            stackTrace: st?.toString(),
-            test: 'upload',
-          ));
-          controller.close();
-        }
-      }).doOnDone(() {
-        print('[startUpload] done => cleanup');
-        keepRunning = false;
-        measureTimer.cancel();
-        cutoffTimer.cancel();
-        socket.close();
-        // We can also stop the isolates if we want, or reuse them for next test
-      }).doOnCancel(() {
-        print('[startUpload] canceled => cleanup');
-        keepRunning = false;
-        measureTimer.cancel();
-        cutoffTimer.cancel();
-        socket.close();
-      });
+      // Wait until ctrl is closed
+      await for (final _ in ctrl.stream) {
+        // aggregator sees each measurement
+      }
+
+      aggregator.log('Upload finished. totalBytes=$totalSoFar');
+      keepRunning = false;
+      measureTimer.cancel();
+      cutoffTimer.cancel();
+      socket.close();
     } catch (err, st) {
-      yield Ndt7Measurement(
-        error: err.toString(),
-        stackTrace: st.toString(),
-        test: 'upload',
-      );
+      aggregator.log('Upload exception => $err');
+      ctrl.add(Ndt7Measurement(
+          error: err.toString(), stackTrace: st.toString(), test: 'upload'));
+      ctrl.close();
     }
   }
 
-  // Listen for server messages in download
-  void _listenForDownload(
-      UniversalWebSocket socket, StreamController<Ndt7Measurement> ctrl) {
+  // Listen for server messages (download)
+  void _listenDownload(
+    UniversalWebSocket socket,
+    StreamController<Ndt7Measurement> ctrl,
+    _MeasurementAggregator aggregator,
+  ) {
     socket.stream.listen((data) {
       if (ctrl.isClosed) return;
       if (data is ByteBuffer) {
-        if (!ctrl.isClosed) {
-          ctrl.add(Ndt7Measurement.internalBinaryDownload(data.lengthInBytes));
-        }
+        ctrl.add(Ndt7Measurement.internalBinaryDownload(data.lengthInBytes));
       } else if (data is Uint8List) {
         ctrl.add(Ndt7Measurement.internalBinaryDownload(data.length));
       } else if (data is String) {
@@ -362,29 +356,29 @@ class Ndt7Client {
             ..origin = 'server'
             ..test = 'download';
           ctrl.add(meas);
+          aggregator.addServerMeasurement(meas);
         } catch (err) {
           ctrl.add(Ndt7Measurement(
               error: 'JSON parse error: $err', test: 'download'));
         }
       }
-    }, onError: (err, st) {
-      if (!ctrl.isClosed) {
-        ctrl.add(Ndt7Measurement(
-            error: err.toString(),
-            stackTrace: st?.toString(),
-            test: 'download'));
-        ctrl.close();
-      }
+    }, onError: (error, st) {
+      ctrl.add(Ndt7Measurement(
+          error: error.toString(),
+          stackTrace: st?.toString(),
+          test: 'download'));
+      ctrl.close();
     }, onDone: () {
-      if (!ctrl.isClosed) {
-        ctrl.close();
-      }
+      ctrl.close();
     });
   }
 
-  // Listen for server messages in upload
-  void _listenForUpload(
-      UniversalWebSocket socket, StreamController<Ndt7Measurement> ctrl) {
+  // Listen for server messages (upload)
+  void _listenUpload(
+    UniversalWebSocket socket,
+    StreamController<Ndt7Measurement> ctrl,
+    _MeasurementAggregator aggregator,
+  ) {
     socket.stream.listen((data) {
       if (ctrl.isClosed) return;
       if (data is String) {
@@ -394,27 +388,129 @@ class Ndt7Client {
             ..origin = 'server'
             ..test = 'upload';
           ctrl.add(meas);
+          aggregator.addServerMeasurement(meas);
         } catch (err) {
           ctrl.add(
               Ndt7Measurement(error: 'JSON parse error: $err', test: 'upload'));
         }
       }
-    }, onError: (err, st) {
-      if (!ctrl.isClosed) {
-        ctrl.add(Ndt7Measurement(
-            error: err.toString(), stackTrace: st?.toString(), test: 'upload'));
-        ctrl.close();
-      }
+    }, onError: (error, st) {
+      ctrl.add(Ndt7Measurement(
+          error: error.toString(), stackTrace: st?.toString(), test: 'upload'));
+      ctrl.close();
     }, onDone: () {
-      if (!ctrl.isClosed) {
-        ctrl.close();
-      }
+      ctrl.close();
     });
   }
 }
 
+/// A private aggregator that collects measurements to produce a final summary
+class _MeasurementAggregator {
+  final String test;
+  final List<Ndt7Measurement> all = [];
+  final List<String> logs = [];
+
+  _MeasurementAggregator({required this.test});
+
+  /// Called when we produce a client-based measurement
+  void addClientMeasurement({
+    required String test,
+    required int elapsedUs,
+    required int totalBytes,
+    required StreamController<Ndt7Measurement> ctrl,
+  }) {
+    final secs = elapsedUs / 1e6;
+    final bits = totalBytes * 8.0;
+    final speed = (secs > 0) ? (bits / secs / 1e6) : 0.0;
+
+    if (ctrl.isClosed) return; // Final safety check
+    ctrl.add(
+      Ndt7Measurement(
+        test: test,
+        origin: 'client',
+        appInfo: AppInfo(
+          elapsedTimeMicros: elapsedUs,
+          numBytes: totalBytes,
+          meanClientMbps: speed,
+        ),
+      ),
+    );
+
+    // Keep track for final summary
+    all.add(Ndt7Measurement(
+      test: test,
+      origin: 'client',
+      appInfo: AppInfo(
+        elapsedTimeMicros: elapsedUs,
+        numBytes: totalBytes,
+        meanClientMbps: speed,
+      ),
+    ));
+  }
+
+  /// Called when we receive a server-based measurement
+  void addServerMeasurement(Ndt7Measurement m) {
+    all.add(m);
+  }
+
+  void log(String msg) {
+    logs.add(msg);
+  }
+
+  /// Produces a final Ndt7Summary at the end
+  Future<Ndt7Summary> finalize() async {
+    double avgMbps = 0.0;
+    final clientMs = all
+        .where(
+            (m) => m.origin == 'client' && m.test == test && m.appInfo != null)
+        .toList();
+    if (clientMs.isNotEmpty) {
+      final last = clientMs.last;
+      final us = last.appInfo!.elapsedTimeMicros.toDouble();
+      final bytes = last.appInfo!.numBytes.toDouble();
+      if (us > 0) {
+        final secs = us / 1e6;
+        final bits = bytes * 8.0;
+        avgMbps = bits / secs / 1e6;
+      }
+    }
+
+    // gather server RTT
+    final rtts = <double>[];
+    for (var m in all) {
+      if (m.origin == 'server' && m.test == test && m.tcpInfo?.rtt != null) {
+        final r = m.tcpInfo!.rtt!;
+        if (r > 0) {
+          rtts.add(r / 1000.0);
+        }
+      }
+    }
+    double avgRtt = 0.0;
+    if (rtts.isNotEmpty) {
+      avgRtt = rtts.reduce((a, b) => a + b) / rtts.length;
+    }
+    final jitter = Ndt7Scoring.computeStdDev(rtts);
+
+    final dScore = Ndt7Scoring.scoreDownload(avgMbps);
+    final uScore = Ndt7Scoring.scoreUpload(avgMbps);
+    final lScore = Ndt7Scoring.scoreLatency(avgRtt);
+    final jScore = Ndt7Scoring.scoreJitter(jitter);
+
+    return Ndt7Summary(
+      test: test,
+      avgMbps: avgMbps,
+      avgRttMs: avgRtt,
+      jitterMs: jitter,
+      downloadScore: dScore,
+      uploadScore: uScore,
+      latencyScore: lScore,
+      jitterScore: jScore,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
-// We add doOnDone() / doOnCancel() so we can handle final events easily
+// doOnDone() / doOnCancel() to handle final events on a Stream
 // ---------------------------------------------------------------------------
 extension Ndt7StreamExtensions<T> on Stream<T> {
   Stream<T> doOnDone(void Function() action) {
