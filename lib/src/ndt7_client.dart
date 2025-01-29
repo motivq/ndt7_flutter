@@ -26,7 +26,7 @@ const int initialUploadMessageSize = 1 << 13;
 /// The worker function for generating random data in an isolate/worker.
 @isolatesHelperWorker
 List<int> makeRandomPayloadWorker(List<int> params) {
-  final size = params[0] as int;
+  final size = params[0];
   final rng = Random();
   return List<int>.generate(size, (_) => 65 + rng.nextInt(57));
 }
@@ -95,10 +95,8 @@ class Ndt7Client {
 
   bool _autoRetryOn401 = false; // so we only refresh once if 401
 
-  Ndt7Client({required Ndt7Config config})
-      : isolates = IsolatesHelper(concurrent: config.concurrency) {
-    this.config = config;
-  }
+  Ndt7Client({required this.config})
+      : isolates = IsolatesHelper(concurrent: config.concurrency);
 
   // ---------------------------------------------------------------------------
   // Constructors that discover M-Lab

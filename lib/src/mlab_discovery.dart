@@ -109,7 +109,7 @@ class MLabDiscovery {
           throw 'MLabDiscovery: results array is empty.';
         }
         // We'll pick the first result
-        final first = results[1];
+        final first = results[0];
         if (first is Map<String, dynamic> && first['urls'] is Map) {
           final location = first['location'] as Map<String, dynamic>;
           final city = location['city'] as String?;

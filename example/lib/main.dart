@@ -112,13 +112,18 @@ class _Ndt7HomePageState extends State<Ndt7HomePage> {
   }
 
   // Start a normal download test
-  void _startDownload() {
+  Future<void> _startDownload() async {
     if (!_isReady) return;
     setState(() {
       _status = 'Download in progress...';
       _logs.clear();
       _speed = 0;
     });
+
+    // Create fresh client for each test
+    _client = await Ndt7Client.withMlabUrls(
+      userAgent: 'ndt7-example-flutter/isolates',
+    );
 
     // startDownloadTest() returns Ndt7TestResult with a stream + a summary future
     final result = _client.startDownloadTest();
@@ -161,13 +166,18 @@ class _Ndt7HomePageState extends State<Ndt7HomePage> {
   }
 
   // Start an upload test
-  void _startUpload() {
+  Future<void> _startUpload() async {
     if (!_isReady) return;
     setState(() {
       _status = 'Upload in progress...';
       _logs.clear();
       _speed = 0;
     });
+
+    // Create fresh client for each test
+    _client = await Ndt7Client.withMlabUrls(
+      userAgent: 'ndt7-example-flutter/isolates',
+    );
 
     final result = _client.startUploadTest();
 
