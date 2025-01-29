@@ -49,7 +49,7 @@ class _Ndt7HomePageState extends State<Ndt7HomePage> {
       TextEditingController(text: '1');
 
   // We'll hold our client. If you want to show concurrency changes or durations,
-  // we can rebuild the client each time we press “Apply Config.”
+  // we can rebuild the client each time we press "Apply Config."
   late Ndt7Client _client;
 
   @override

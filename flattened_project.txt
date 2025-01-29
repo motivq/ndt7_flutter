@@ -1,0 +1,2030 @@
+=== START: analysis_options.yaml ===
+# analysis_options.yaml
+include: package:flutter_lints/flutter.yaml
+
+# Additional information about this file can be found at
+# https://dart.dev/guides/language/analysis-options
+
+=== END: analysis_options.yaml ===
+
+=== START: example/analysis_options.yaml ===
+# example/analysis_options.yaml
+include: package:flutter_lints/flutter.yaml
+
+=== END: example/analysis_options.yaml ===
+
+=== START: example/lib/main.dart ===
+// example/lib/main.dart
+
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:ndt7/ndt7.dart'; // The updated library
+
+void main() {
+  runApp(const Ndt7ExampleApp());
+}
+
+class Ndt7ExampleApp extends StatelessWidget {
+  const Ndt7ExampleApp({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'ndt7 Isolates Example',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        useMaterial3: true,
+      ),
+      home: const Ndt7HomePage(),
+    );
+  }
+}
+
+class Ndt7HomePage extends StatefulWidget {
+  const Ndt7HomePage({Key? key}) : super(key: key);
+
+  @override
+  State<Ndt7HomePage> createState() => _Ndt7HomePageState();
+}
+
+class _Ndt7HomePageState extends State<Ndt7HomePage> {
+  bool _isReady = false;
+  String _status = 'Idle';
+  String _hostDiscovered = '';
+  double _speed = 0;
+
+  // We'll keep a list of textual log lines
+  final List<String> _logs = [];
+
+  // We'll store some config fields for a demo UI:
+  final TextEditingController _downloadSecsCtrl =
+      TextEditingController(text: '15');
+  final TextEditingController _uploadSecsCtrl =
+      TextEditingController(text: '10');
+  final TextEditingController _concurrencyCtrl =
+      TextEditingController(text: '1');
+
+  // We'll hold our client. If you want to show concurrency changes or durations,
+  // we can rebuild the client each time we press "Apply Config."
+  late Ndt7Client _client;
+
+  @override
+  void initState() {
+    super.initState();
+    _initMlab();
+  }
+
+  // Discover M-Lab server using the modern approach (withMlabUrls).
+  Future<void> _initMlab() async {
+    setState(() {
+      _status = 'Discovering M-Lab...';
+      _logs.clear();
+      _isReady = false;
+    });
+    try {
+      // We just do a quick call with default durations & concurrency=1
+      final c = await Ndt7Client.withMlabUrls(
+        userAgent: 'ndt7-example-flutter/isolates',
+      );
+      setState(() {
+        _client = c;
+        _hostDiscovered = c.config.host ?? '';
+        _isReady = true;
+        _status = 'Ready';
+        _logs.add('Discovered host: $_hostDiscovered');
+      });
+    } catch (e, st) {
+      setState(() {
+        _status = 'Discovery failed';
+        _logs.add('Error: $e\n$st');
+      });
+    }
+  }
+
+  // A function to update the client config based on our text fields
+  void _applyConfig() {
+    setState(() {
+      final downloadSecs = int.tryParse(_downloadSecsCtrl.text) ?? 15;
+      final uploadSecs = int.tryParse(_uploadSecsCtrl.text) ?? 10;
+      final concurrency = int.tryParse(_concurrencyCtrl.text) ?? 1;
+
+      // Rebuild the config. We'll keep the same "discovered" host and token URLs if any.
+      // We can keep everything the same except durations & concurrency.
+      final oldConfig = _client.config;
+      final newConfig = Ndt7Config(
+        fullDownloadUrl: oldConfig.fullDownloadUrl,
+        fullUploadUrl: oldConfig.fullUploadUrl,
+        host: oldConfig.host,
+        scheme: oldConfig.scheme,
+        queryParams: oldConfig.queryParams,
+        downloadTestDuration: Duration(seconds: downloadSecs),
+        uploadTestDuration: Duration(seconds: uploadSecs),
+        concurrency: concurrency,
+      );
+      _client = Ndt7Client(config: newConfig);
+      _logs.add(
+          'Updated config => d=$downloadSecs, u=$uploadSecs, concurrency=$concurrency');
+    });
+  }
+
+  // Start a normal download test
+  void _startDownload() {
+    if (!_isReady) return;
+    setState(() {
+      _status = 'Download in progress...';
+      _logs.clear();
+      _speed = 0;
+    });
+
+    // startDownloadTest() returns Ndt7TestResult with a stream + a summary future
+    final result = _client.startDownloadTest();
+
+    // Subscribe to real-time measurements
+    result.measurements.listen(
+      (measurement) {
+        if (measurement.error != null) {
+          setState(() {
+            _status = 'Download error';
+            _logs.add('Error: ${measurement.error}');
+          });
+        } else if (measurement.appInfo != null &&
+            measurement.appInfo!.elapsedTimeMicros > 0) {
+          final us = measurement.appInfo!.elapsedTimeMicros.toDouble();
+          final bytes = measurement.appInfo!.numBytes.toDouble();
+          final sec = us / 1e6;
+          final bits = bytes * 8.0;
+          final speed = bits / sec / 1e6; // Mbit/s
+          setState(() {
+            _speed = speed;
+            _logs.add('Download => ${speed.toStringAsFixed(2)} Mbps');
+          });
+        }
+      },
+      onDone: () {
+        setState(() {
+          _status = 'Download complete';
+          _logs.add('Download done');
+        });
+      },
+    );
+
+    // We can also await the final summary if we want:
+    result.summary.then((summary) {
+      setState(() {
+        _logs.add('Final Download Summary => $summary');
+      });
+    });
+  }
+
+  // Start an upload test
+  void _startUpload() {
+    if (!_isReady) return;
+    setState(() {
+      _status = 'Upload in progress...';
+      _logs.clear();
+      _speed = 0;
+    });
+
+    final result = _client.startUploadTest();
+
+    result.measurements.listen(
+      (measurement) {
+        if (measurement.error != null) {
+          setState(() {
+            _status = 'Upload error';
+            _logs.add('Error: ${measurement.error}');
+          });
+        } else if (measurement.appInfo != null &&
+            measurement.appInfo!.elapsedTimeMicros > 0) {
+          final us = measurement.appInfo!.elapsedTimeMicros.toDouble();
+          final bytes = measurement.appInfo!.numBytes.toDouble();
+          final sec = us / 1e6;
+          final bits = bytes * 8.0;
+          final speed = bits / sec / 1e6; // Mbit/s
+          setState(() {
+            _speed = speed;
+            _logs.add('Upload => ${speed.toStringAsFixed(2)} Mbps');
+          });
+        }
+      },
+      onDone: () {
+        setState(() {
+          _status = 'Upload complete';
+          _logs.add('Upload done');
+        });
+      },
+    );
+
+    // Also wait for the summary
+    result.summary.then((summary) {
+      setState(() {
+        _logs.add('Final Upload Summary => $summary');
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context).textTheme;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('ndt7 + Isolates Example')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            // Config panel at the top
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _downloadSecsCtrl,
+                    decoration:
+                        const InputDecoration(labelText: 'Download secs'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _uploadSecsCtrl,
+                    decoration: const InputDecoration(labelText: 'Upload secs'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _concurrencyCtrl,
+                    decoration: const InputDecoration(labelText: 'Concurrency'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _isReady ? _applyConfig : null,
+                  child: const Text('Apply Config'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            Text('Discovered Host: $_hostDiscovered', style: theme.titleMedium),
+            const SizedBox(height: 16),
+            Text('Status: $_status', style: theme.titleMedium),
+            const SizedBox(height: 16),
+            Text('Current Speed: ${_speed.toStringAsFixed(2)} Mbps',
+                style: theme.headlineMedium),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                ElevatedButton(
+                  onPressed: _isReady ? _startDownload : null,
+                  child: const Text('Download'),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _isReady ? _startUpload : null,
+                  child: const Text('Upload'),
+                ),
+              ],
+            ),
+            Expanded(
+              child: Container(
+                margin: const EdgeInsets.only(top: 16),
+                padding: const EdgeInsets.all(8),
+                color: Colors.grey.shade200,
+                child: ListView.builder(
+                  itemCount: _logs.length,
+                  itemBuilder: (ctx, i) =>
+                      Text(_logs[i], style: theme.bodyMedium),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+=== END: example/lib/main.dart ===
+
+=== START: example/pubspec.yaml ===
+# example/pubspec.yaml
+name: ndt7_example
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: ^3.6.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ndt7:
+    path: ../ 
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+=== END: example/pubspec.yaml ===
+
+=== START: example/web/index.html ===
+<!-- example/web/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="example">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>example</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
+
+=== END: example/web/index.html ===
+
+=== START: lib/ndt7.dart ===
+// lib/ndt7.dart
+
+export 'src/ndt7_client.dart';
+export 'src/ndt7_measurement.dart';
+export 'src/mlab_discovery.dart';
+
+=== END: lib/ndt7.dart ===
+
+=== START: lib/src/mlab_discovery.dart ===
+// lib/src/mlab_discovery.dart
+
+import 'dart:convert';
+import 'universal_http.dart';
+
+class MlabLocation {
+  final String? country;
+  final String? city;
+
+  MlabLocation({
+    this.country,
+    this.city,
+  });
+}
+
+/// Holds full URLs for download & upload WebSocket tests
+/// as returned by the M-Lab locate service (including tokens).
+class MlabServerUrls {
+  final String downloadUrl;
+  final String uploadUrl;
+  final String fqdn;
+  final MlabLocation? location;
+
+  MlabServerUrls({
+    required this.downloadUrl,
+    required this.uploadUrl,
+    required this.fqdn,
+    this.location,
+  });
+}
+
+/// A utility class to discover the nearest M-Lab ndt7 server.
+class MLabDiscovery {
+  /// The older method returns just a single FQDN, ignoring tokens.
+  /// If your environment returns just { "fqdn": ... }, you can still use it.
+  static Future<String> discoverServer({
+    String userAgent = 'ndt7-dart/1.0',
+  }) async {
+    const url = 'https://locate.measurementlab.net/ndt7';
+    print('[MLabDiscovery] GET => $url with User-Agent=$userAgent');
+
+    final response = await universalGet(
+      url,
+      headers: {
+        'User-Agent': userAgent,
+        'Accept': 'application/json',
+      },
+    );
+
+    print('[MLabDiscovery] Response statusCode=${response.statusCode}');
+
+    if (response.statusCode == 200 && response.body != null) {
+      final decoded = json.decode(response.body!);
+      // If the older locate API just returns: { "fqdn": "..."}
+      if (decoded is Map<String, dynamic> && decoded['fqdn'] is String) {
+        final fqdn = decoded['fqdn'] as String;
+        print('[MLabDiscovery] Found old-style fqdn: $fqdn');
+        return fqdn;
+      } else {
+        throw 'Expected legacy "fqdn" field. Use discoverServerWithUrls() instead.';
+      }
+    } else if (response.statusCode == 204) {
+      throw 'MLabDiscovery: No capacity (HTTP 204). Try again later.';
+    } else {
+      throw 'MLabDiscovery: HTTP ${response.statusCode} error from locate.measurementlab.net';
+    }
+  }
+
+  /// Queries a new locate endpoint that returns arrays with "results", each
+  /// containing "urls" => { "wss:///v0/ndt7/download": "...?access_token=..." } etc.
+  ///
+  /// Example snippet:
+  ///  {
+  ///    "results": [
+  ///      {
+  ///        "urls": {
+  ///          "wss:///v0/ndt7/download": "wss://pt-mlab2-dfw08.../v0/ndt7/download?access_token=..."
+  ///          "wss:///v0/ndt7/upload":   "wss://pt-mlab2-dfw08.../v0/ndt7/upload?access_token=..."
+  ///        }
+  ///      }
+  ///    ]
+  ///  }
+  ///
+  /// We pick the first result and read "wss:///v0/ndt7/download" & ".../upload".
+  static Future<MlabServerUrls> discoverServerWithUrls({
+    String userAgent = 'ndt7-dart/1.0',
+  }) async {
+    const url =
+        'https://locate.measurementlab.net/v2/nearest/ndt/ndt7?format=json';
+    // or whichever endpoint returns the "results" array with "urls".
+
+    print('[MLabDiscovery] GET => $url with User-Agent=$userAgent');
+
+    final response = await universalGet(
+      url,
+      headers: {
+        'User-Agent': userAgent,
+        'Accept': 'application/json',
+      },
+    );
+
+    print('[MLabDiscovery] Response statusCode=${response.statusCode}');
+
+    if (response.statusCode == 200 && response.body != null) {
+      final decoded = json.decode(response.body!);
+      if (decoded is Map<String, dynamic> && decoded['results'] is List) {
+        final results = decoded['results'] as List;
+        if (results.isEmpty) {
+          throw 'MLabDiscovery: results array is empty.';
+        }
+        // We'll pick the first result
+        final first = results[1];
+        if (first is Map<String, dynamic> && first['urls'] is Map) {
+          final location = first['location'] as Map<String, dynamic>;
+          final city = location['city'] as String?;
+          final country = location['country'] as String?;
+
+          final urlsMap = first['urls'] as Map;
+          final downloadKey = 'wss:///ndt/v7/download';
+          final uploadKey = 'wss:///ndt/v7/upload';
+
+          if (!urlsMap.containsKey(downloadKey)) {
+            throw 'MLabDiscovery: missing "$downloadKey" in the JSON.';
+          }
+          final dlUrl = urlsMap[downloadKey] as String;
+          final ulUrl = urlsMap[uploadKey] as String;
+          final fqdn = first['hostname'] as String;
+          print('[MLabDiscovery] Found downloadUrl=$dlUrl, uploadUrl=$ulUrl');
+
+          return MlabServerUrls(
+            downloadUrl: dlUrl,
+            uploadUrl: ulUrl,
+            fqdn: fqdn,
+            location: MlabLocation(city: city, country: country),
+          );
+        } else {
+          throw 'MLabDiscovery: Invalid format for "results[0].urls"';
+        }
+      } else {
+        throw 'MLabDiscovery: No "results" array found in locate response.';
+      }
+    } else if (response.statusCode == 204) {
+      throw 'MLabDiscovery: No capacity (HTTP 204). Try again later.';
+    } else {
+      throw 'MLabDiscovery: HTTP ${response.statusCode} error from locate.measurementlab.net';
+    }
+  }
+}
+
+=== END: lib/src/mlab_discovery.dart ===
+
+=== START: lib/src/ndt7_client.dart ===
+// lib/src/ndt7_client.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
+import 'dart:typed_data';
+import 'dart:io' show WebSocketException;
+
+import 'package:isolates_helper/isolates_helper.dart';
+
+import 'ndt7_measurement.dart';
+import 'universal_websocket.dart';
+import 'mlab_discovery.dart';
+
+/// We'll produce client-based measurements every 250 ms for both download & upload.
+const Duration clientMeasurementInterval = Duration(milliseconds: 250);
+
+/// The maximum single binary message size (16 MiB).
+const int maxMessageSize = 1 << 24;
+
+/// We'll double the chunk size if currentSize < totalSoFar / scalingFraction.
+const int scalingFraction = 16;
+
+/// The initial message size for upload (8 KiB).
+const int initialUploadMessageSize = 1 << 13;
+
+/// The worker function for generating random data in an isolate/worker.
+@isolatesHelperWorker
+List<int> makeRandomPayloadWorker(List<int> params) {
+  final size = params[0] as int;
+  final rng = Random();
+  return List<int>.generate(size, (_) => 65 + rng.nextInt(57));
+}
+
+/// The subprotocol required by ndt7
+const ndt7WebSocketSubProtocol = 'net.measurementlab.ndt.v7';
+
+/// Default concurrency for isolate usage
+const defaultIsolateConcurrency = 1;
+
+/// A config object letting you specify server, durations, concurrency, etc.
+class Ndt7Config {
+  final String? fullDownloadUrl;
+  final String? fullUploadUrl;
+  final String? host;
+  final String scheme;
+  final String queryParams;
+  final Duration downloadTestDuration;
+  final Duration uploadTestDuration;
+  final int concurrency;
+
+  Ndt7Config({
+    this.fullDownloadUrl,
+    this.fullUploadUrl,
+    this.host,
+    this.scheme = 'wss',
+    this.queryParams = '',
+    this.downloadTestDuration = const Duration(seconds: 15),
+    this.uploadTestDuration = const Duration(seconds: 10),
+    this.concurrency = defaultIsolateConcurrency,
+  });
+
+  /// Returns a copy with updated URLs / host from fresh locate.
+  Ndt7Config copyWith({
+    String? fullDownloadUrl,
+    String? fullUploadUrl,
+    String? host,
+  }) {
+    return Ndt7Config(
+      fullDownloadUrl: fullDownloadUrl ?? this.fullDownloadUrl,
+      fullUploadUrl: fullUploadUrl ?? this.fullUploadUrl,
+      host: host ?? this.host,
+      scheme: scheme,
+      queryParams: queryParams,
+      downloadTestDuration: downloadTestDuration,
+      uploadTestDuration: uploadTestDuration,
+      concurrency: concurrency,
+    );
+  }
+}
+
+/// A simple result combining the real-time measurement stream and a summary future.
+class Ndt7TestResult {
+  final Stream<Ndt7Measurement> measurements;
+  final Future<Ndt7Summary> summary;
+  Ndt7TestResult(this.measurements, this.summary);
+}
+
+/// The main NDT7 client that uses:
+/// - One WebSocket for download
+/// - One WebSocket for upload
+/// - Concurrency for the upload tasks only
+class Ndt7Client {
+  late Ndt7Config config;
+  final IsolatesHelper isolates;
+
+  bool _autoRetryOn401 = false; // so we only refresh once if 401
+
+  Ndt7Client({required Ndt7Config config})
+      : isolates = IsolatesHelper(concurrent: config.concurrency) {
+    this.config = config;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Constructors that discover M-Lab
+  // ---------------------------------------------------------------------------
+  static Future<Ndt7Client> withMlab({
+    String userAgent = 'ndt7-dart/1.0',
+    String scheme = 'wss',
+    String queryParams = '',
+    Duration downloadTestDuration = const Duration(seconds: 15),
+    Duration uploadTestDuration = const Duration(seconds: 10),
+    int concurrency = defaultIsolateConcurrency,
+  }) async {
+    final discoveredHost =
+        await MLabDiscovery.discoverServer(userAgent: userAgent);
+    final cfg = Ndt7Config(
+      host: discoveredHost,
+      scheme: scheme,
+      queryParams: queryParams,
+      downloadTestDuration: downloadTestDuration,
+      uploadTestDuration: uploadTestDuration,
+      concurrency: concurrency,
+    );
+    return Ndt7Client(config: cfg);
+  }
+
+  static Future<Ndt7Client> withMlabUrls({
+    String userAgent = 'ndt7-dart/1.0',
+    Duration downloadTestDuration = const Duration(seconds: 15),
+    Duration uploadTestDuration = const Duration(seconds: 10),
+    int concurrency = defaultIsolateConcurrency,
+  }) async {
+    final urls =
+        await MLabDiscovery.discoverServerWithUrls(userAgent: userAgent);
+    final cfg = Ndt7Config(
+      fullDownloadUrl: urls.downloadUrl,
+      fullUploadUrl: urls.uploadUrl,
+      host: urls.fqdn,
+      scheme: 'wss',
+      queryParams: '',
+      downloadTestDuration: downloadTestDuration,
+      uploadTestDuration: uploadTestDuration,
+      concurrency: concurrency,
+    );
+    return Ndt7Client(config: cfg);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Download test - single WebSocket
+  // ---------------------------------------------------------------------------
+  Ndt7TestResult startDownloadTest() {
+    final ctrl = StreamController<Ndt7Measurement>.broadcast();
+    final futureSummary = _runDownload(ctrl);
+    return Ndt7TestResult(ctrl.stream, futureSummary);
+  }
+
+  Future<Ndt7Summary> _runDownload(
+      StreamController<Ndt7Measurement> ctrl) async {
+    final aggregator = _MeasurementAggregator(test: 'download');
+    final completer = Completer<Ndt7Summary>();
+
+    unawaited(
+      _startDownload(ctrl, aggregator).then((_) {
+        completer.complete(aggregator.finalize());
+      }).catchError((err, st) {
+        completer.completeError(err, st);
+      }),
+    );
+
+    return completer.future;
+  }
+
+  /// The standard single-connection approach for download. There's no concurrency
+  /// because the server is sending data. The concurrency param is effectively unused here.
+  Future<void> _startDownload(
+    StreamController<Ndt7Measurement> ctrl,
+    _MeasurementAggregator aggregator,
+  ) async {
+    final downloadUrl = config.fullDownloadUrl ??
+        '${config.scheme}://${config.host}/ndt/v7/download${config.queryParams}';
+    try {
+      await isolates.ensureStarted;
+
+      final cutoffTimer = Timer(config.downloadTestDuration, () {
+        if (!ctrl.isClosed) ctrl.close();
+      });
+
+      final startTime = DateTime.now();
+      int totalBytes = 0;
+
+      aggregator.log('Connecting to $downloadUrl for download...');
+      final socket = await universalConnect(downloadUrl,
+          protocols: [ndt7WebSocketSubProtocol]);
+      aggregator.log('Download WebSocket connected: $downloadUrl');
+
+      // Listen for data
+      late StreamSubscription sub;
+      sub = socket.stream.listen(
+        (data) {
+          if (ctrl.isClosed) return;
+          if (data is ByteBuffer) {
+            totalBytes += data.lengthInBytes;
+            ctrl.add(
+                Ndt7Measurement.internalBinaryDownload(data.lengthInBytes));
+          } else if (data is Uint8List) {
+            totalBytes += data.length;
+            ctrl.add(Ndt7Measurement.internalBinaryDownload(data.length));
+          } else if (data is String) {
+            try {
+              final obj = json.decode(data);
+              final meas = Ndt7Measurement.fromJson(obj)
+                ..origin = 'server'
+                ..test = 'download';
+              ctrl.add(meas);
+              aggregator.addServerMeasurement(meas);
+            } catch (err) {
+              ctrl.add(Ndt7Measurement(
+                  error: 'JSON parse error: $err', test: 'download'));
+            }
+          }
+        },
+        onError: (error, st) {
+          aggregator.log('[download single-conn] onError => $error');
+          if (_isClosedSocketError(error)) {
+            aggregator.log('[download] ignoring closed-socket => $error');
+            return;
+          }
+          if (!ctrl.isClosed) {
+            if (_is401(error) && !_autoRetryOn401) {
+              aggregator.log('[download] 401 => attempt refresh');
+              _autoRetryOn401 = true;
+              // Don't close the controller yet - let the retry handle that
+              socket.close();
+              _refreshUrlsAndRetry(aggregator, ctrl, wasDownload: true);
+            } else {
+              ctrl.add(Ndt7Measurement(
+                  error: error.toString(),
+                  stackTrace: st?.toString(),
+                  test: 'download'));
+              ctrl.close();
+            }
+          }
+        },
+        onDone: () {
+          aggregator.log('[download single-conn] onDone');
+          sub.cancel();
+          socket.close();
+        },
+      );
+
+      // 250ms measurement
+      final measureTimer = Timer.periodic(clientMeasurementInterval, (_) {
+        if (ctrl.isClosed) return;
+        final elapsedUs = DateTime.now().difference(startTime).inMicroseconds;
+        aggregator.addClientMeasurement(
+          test: 'download',
+          elapsedUs: elapsedUs,
+          totalBytes: totalBytes,
+          ctrl: ctrl,
+        );
+      });
+
+      // Wait for stream to close
+      await ctrl.done;
+      aggregator.log('[download single-conn] totalBytes=$totalBytes');
+      measureTimer.cancel();
+      cutoffTimer.cancel();
+      sub.cancel();
+      socket.close();
+    } catch (err, st) {
+      aggregator.log('[download single-conn] error => $err');
+      if (_is401(err) && !_autoRetryOn401) {
+        aggregator.log('[download single-conn] 401 => attempt refresh');
+        _autoRetryOn401 = true;
+        if (!ctrl.isClosed) ctrl.close();
+        await _refreshUrlsAndRetry(aggregator, ctrl, wasDownload: true);
+      } else {
+        if (!ctrl.isClosed) {
+          ctrl.add(Ndt7Measurement(
+              error: err.toString(),
+              stackTrace: st.toString(),
+              test: 'download'));
+          ctrl.close();
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Upload test - single WebSocket, concurrency for random data tasks
+  // ---------------------------------------------------------------------------
+  Ndt7TestResult startUploadTest() {
+    final ctrl = StreamController<Ndt7Measurement>.broadcast();
+    final futureSummary = _runUpload(ctrl);
+    return Ndt7TestResult(ctrl.stream, futureSummary);
+  }
+
+  Future<Ndt7Summary> _runUpload(StreamController<Ndt7Measurement> ctrl) async {
+    final aggregator = _MeasurementAggregator(test: 'upload');
+    final completer = Completer<Ndt7Summary>();
+
+    unawaited(
+      _startUpload(ctrl, aggregator).then((_) {
+        completer.complete(aggregator.finalize());
+      }).catchError((err, st) {
+        completer.completeError(err, st);
+      }),
+    );
+
+    return completer.future;
+  }
+
+  Future<void> _startUpload(
+    StreamController<Ndt7Measurement> ctrl,
+    _MeasurementAggregator aggregator,
+  ) async {
+    final uploadUrl = config.fullUploadUrl ??
+        '${config.scheme}://${config.host}/ndt/v7/upload${config.queryParams}';
+
+    try {
+      await isolates.ensureStarted;
+
+      final cutoffTimer = Timer(config.uploadTestDuration, () {
+        if (!ctrl.isClosed) ctrl.close();
+      });
+
+      final socket = await universalConnect(uploadUrl,
+          protocols: [ndt7WebSocketSubProtocol]);
+      aggregator.log('Upload WebSocket connected: $uploadUrl');
+
+      final startTime = DateTime.now();
+      bool keepRunning = true;
+      int totalSoFar = 0;
+      int currentSize = initialUploadMessageSize;
+
+      // Listen for server messages
+      late StreamSubscription sub;
+      sub = socket.stream.listen(
+        (data) {
+          if (ctrl.isClosed) return;
+          if (data is String) {
+            try {
+              final obj = json.decode(data);
+              final meas = Ndt7Measurement.fromJson(obj)
+                ..origin = 'server'
+                ..test = 'upload';
+              ctrl.add(meas);
+              aggregator.addServerMeasurement(meas);
+            } catch (err) {
+              ctrl.add(Ndt7Measurement(
+                  error: 'JSON parse error: $err', test: 'upload'));
+            }
+          }
+        },
+        onError: (error, st) {
+          aggregator.log('[upload single-conn] onError => $error');
+          if (_isClosedSocketError(error)) {
+            aggregator.log('[upload] ignoring closed-socket => $error');
+            return;
+          }
+          if (!ctrl.isClosed) {
+            if (_is401(error) && !_autoRetryOn401) {
+              aggregator.log('[upload] 401 => attempt refresh');
+              _autoRetryOn401 = true;
+              // ctrl.close();
+              socket.close();
+              _refreshUrlsAndRetry(aggregator, ctrl, wasDownload: false);
+            } else {
+              ctrl.add(Ndt7Measurement(
+                  error: error.toString(),
+                  stackTrace: st?.toString(),
+                  test: 'upload'));
+              ctrl.close();
+            }
+          }
+        },
+        onDone: () {
+          aggregator.log('[upload single-conn] onDone');
+          sub.cancel();
+          socket.close();
+        },
+      );
+
+      // concurrency for random tasks
+      final tasks = <Future<List<int>>>[];
+
+      void maybeSpawnTasks() {
+        while (keepRunning &&
+            !ctrl.isClosed &&
+            tasks.length < config.concurrency) {
+          final future = isolates.compute(
+            makeRandomPayloadWorker,
+            [currentSize],
+            workerFunction: 'makeRandomPayloadWorker',
+          );
+          tasks.add(future);
+        }
+      }
+
+      maybeSpawnTasks();
+
+      Future<void> concurrencyLoop() async {
+        while (keepRunning) {
+          if (ctrl.isClosed ||
+              DateTime.now().difference(startTime) >=
+                  config.uploadTestDuration) {
+            aggregator.log('[Upload single-conn] done => break');
+            break;
+          }
+          if (tasks.isEmpty) {
+            maybeSpawnTasks();
+            if (tasks.isEmpty) {
+              aggregator.log('[Upload single-conn] no tasks => break');
+              break;
+            }
+          }
+
+          // Wait for first completed
+          final pair = await Future.any(
+            tasks.map((f) => f.then((res) => [f, res])),
+          );
+          final completedFuture = pair[0] as Future<List<int>>;
+          final chunkData = pair[1] as List<int>;
+
+          tasks.remove(completedFuture);
+
+          if (ctrl.isClosed ||
+              DateTime.now().difference(startTime) >=
+                  config.uploadTestDuration) {
+            aggregator.log('[Upload single-conn] time or closed => break');
+            break;
+          }
+
+          // send chunk
+          try {
+            socket.send(Uint8List.fromList(chunkData));
+          } catch (sendErr) {
+            aggregator.log('[Upload single-conn] send error => $sendErr');
+            if (!ctrl.isClosed) {
+              ctrl.add(
+                  Ndt7Measurement(error: sendErr.toString(), test: 'upload'));
+              ctrl.close();
+            }
+            break;
+          }
+
+          totalSoFar += currentSize;
+
+          // scale
+          if (currentSize < maxMessageSize) {
+            final threshold = totalSoFar ~/ scalingFraction;
+            if (currentSize < threshold) {
+              currentSize *= 2;
+              if (currentSize > maxMessageSize) {
+                currentSize = maxMessageSize;
+              }
+            }
+          }
+
+          maybeSpawnTasks();
+          await Future(() {});
+        }
+
+        aggregator.log('[Upload single-conn] concurrency loop done');
+        if (!ctrl.isClosed) ctrl.close();
+      }
+
+      concurrencyLoop();
+
+      // 250ms measurement
+      final measureTimer = Timer.periodic(clientMeasurementInterval, (_) {
+        if (!ctrl.isClosed) {
+          final elapsedUs = DateTime.now().difference(startTime).inMicroseconds;
+          aggregator.addClientMeasurement(
+            test: 'upload',
+            elapsedUs: elapsedUs,
+            totalBytes: totalSoFar,
+            ctrl: ctrl,
+          );
+        }
+      });
+
+      // wait for stream to close
+      await ctrl.done;
+      aggregator.log('[Upload single-conn] totalSoFar=$totalSoFar');
+      keepRunning = false;
+      measureTimer.cancel();
+      socket.close();
+      sub.cancel();
+      cutoffTimer.cancel();
+    } catch (err, st) {
+      aggregator.log('[upload single-conn] error => $err');
+      if (_is401(err) && !_autoRetryOn401) {
+        aggregator.log('[upload single-conn] 401 => attempt refresh');
+        _autoRetryOn401 = true;
+        if (!ctrl.isClosed) ctrl.close();
+        await _refreshUrlsAndRetry(aggregator, ctrl, wasDownload: false);
+      } else {
+        if (!ctrl.isClosed) {
+          ctrl.add(Ndt7Measurement(
+              error: err.toString(),
+              stackTrace: st.toString(),
+              test: 'upload'));
+          ctrl.close();
+        }
+      }
+    }
+  }
+
+  /// Called if we see 401 => we do MLab re-locate and re-run
+  Future<void> _refreshUrlsAndRetry(
+    _MeasurementAggregator aggregator,
+    StreamController<Ndt7Measurement> ctrl, {
+    required bool wasDownload,
+    String userAgent = 'ndt7-dart/1.0',
+  }) async {
+    aggregator.log('[refreshUrlsAndRetry] begin');
+    try {
+      final newUrls = await MLabDiscovery.discoverServerWithUrls(
+        userAgent: '$userAgent refresh',
+      );
+      config = config.copyWith(
+        fullDownloadUrl: newUrls.downloadUrl,
+        fullUploadUrl: newUrls.uploadUrl,
+        host: newUrls.fqdn,
+      );
+      aggregator.log('[refreshUrlsAndRetry] got new FQDN=${newUrls.fqdn}');
+
+      if (!ctrl.isClosed) {
+        if (wasDownload) {
+          await _startDownload(ctrl, aggregator);
+        } else {
+          await _startUpload(ctrl, aggregator);
+        }
+      }
+    } catch (e, st) {
+      aggregator.log('[refreshUrlsAndRetry] failed => $e');
+      if (!ctrl.isClosed) {
+        ctrl.add(Ndt7Measurement(
+            error: e.toString(),
+            stackTrace: st.toString(),
+            test: wasDownload ? 'download' : 'upload'));
+        ctrl.close();
+      }
+    }
+  }
+
+  // If error text has '401'
+  bool _is401(dynamic err) {
+    if (err is WebSocketException) {
+      return err.httpStatusCode == 401;
+    }
+    // Also check string representation for platforms where WebSocketException might be different
+    final errStr = err.toString().toLowerCase();
+    return errStr.contains('401') || errStr.contains('unauthorized');
+  }
+
+  // If error text is "Reading from a closed socket"
+  bool _isClosedSocketError(dynamic err) {
+    final msg = err?.toString() ?? '';
+    return msg.contains('Reading from a closed socket');
+  }
+}
+
+/// Aggregates measurements for final summary, plus we track total downloaded bytes if concurrency>1.
+/// But now we only do single-socket for download, so totalDownloadBytes just increments in that one subscription.
+class _MeasurementAggregator {
+  final String test;
+  final List<Ndt7Measurement> all = [];
+  final List<String> logs = [];
+
+  // For single-socket download, we just increment in the subscription logic
+  int totalClientDownloadBytes = 0;
+
+  _MeasurementAggregator({required this.test});
+
+  /// For client-based measurement
+  void addClientMeasurement({
+    required String test,
+    required int elapsedUs,
+    required int totalBytes,
+    required StreamController<Ndt7Measurement> ctrl,
+  }) {
+    final secs = elapsedUs / 1e6;
+    final bits = totalBytes * 8.0;
+    final speed = (secs > 0) ? (bits / secs / 1e6) : 0.0;
+
+    if (!ctrl.isClosed) {
+      ctrl.add(
+        Ndt7Measurement(
+          test: test,
+          origin: 'client',
+          appInfo: AppInfo(
+            elapsedTimeMicros: elapsedUs,
+            numBytes: totalBytes,
+            meanClientMbps: speed,
+          ),
+        ),
+      );
+    }
+
+    all.add(
+      Ndt7Measurement(
+        test: test,
+        origin: 'client',
+        appInfo: AppInfo(
+          elapsedTimeMicros: elapsedUs,
+          numBytes: totalBytes,
+          meanClientMbps: speed,
+        ),
+      ),
+    );
+  }
+
+  void addServerMeasurement(Ndt7Measurement m) {
+    all.add(m);
+  }
+
+  void addDownloadBytes(int count) {
+    totalClientDownloadBytes += count;
+  }
+
+  void log(String msg) {
+    logs.add(msg);
+  }
+
+  Future<Ndt7Summary> finalize() async {
+    double avgMbps = 0.0;
+    final clientMs = all
+        .where(
+            (m) => m.origin == 'client' && m.test == test && m.appInfo != null)
+        .toList();
+    if (clientMs.isNotEmpty) {
+      final last = clientMs.last;
+      final us = last.appInfo!.elapsedTimeMicros.toDouble();
+      final bytes = last.appInfo!.numBytes.toDouble();
+      if (us > 0) {
+        final secs = us / 1e6;
+        final bits = bytes * 8.0;
+        avgMbps = bits / secs / 1e6;
+      }
+    }
+
+    final rtts = <double>[];
+    for (var m in all) {
+      if (m.origin == 'server' && m.test == test && m.tcpInfo?.rtt != null) {
+        final r = m.tcpInfo!.rtt!;
+        if (r > 0) {
+          rtts.add(r / 1000.0);
+        }
+      }
+    }
+    double avgRtt = 0.0;
+    if (rtts.isNotEmpty) {
+      avgRtt = rtts.reduce((a, b) => a + b) / rtts.length;
+    }
+    final jitter = Ndt7Scoring.computeStdDev(rtts);
+
+    final dScore = Ndt7Scoring.scoreDownload(avgMbps);
+    final uScore = Ndt7Scoring.scoreUpload(avgMbps);
+    final lScore = Ndt7Scoring.scoreLatency(avgRtt);
+    final jScore = Ndt7Scoring.scoreJitter(jitter);
+
+    return Ndt7Summary(
+      test: test,
+      avgMbps: avgMbps,
+      avgRttMs: avgRtt,
+      jitterMs: jitter,
+      downloadScore: dScore,
+      uploadScore: uScore,
+      latencyScore: lScore,
+      jitterScore: jScore,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// doOnDone() / doOnCancel() to handle final events on a Stream
+// ---------------------------------------------------------------------------
+extension Ndt7StreamExtensions<T> on Stream<T> {
+  Stream<T> doOnDone(void Function() action) {
+    return transform(
+      StreamTransformer<T, T>.fromHandlers(
+        handleData: (data, sink) => sink.add(data),
+        handleError: (error, st, sink) => sink.addError(error, st),
+        handleDone: (sink) {
+          action();
+          sink.close();
+        },
+      ),
+    );
+  }
+
+  Stream<T> doOnCancel(void Function() action) {
+    final ctrl = StreamController<T>();
+    late StreamSubscription<T> sub;
+    ctrl.onListen = () {
+      sub = listen(
+        ctrl.add,
+        onError: ctrl.addError,
+        onDone: ctrl.close,
+      );
+    };
+    ctrl.onCancel = () async {
+      action();
+      await sub.cancel();
+    };
+    return ctrl.stream;
+  }
+}
+
+=== END: lib/src/ndt7_client.dart ===
+
+=== START: lib/src/ndt7_measurement.dart ===
+// lib/src/ndt7_measurement.dart
+
+import 'dart:math';
+
+/// Represents the JSON measurement structure from the ndt7 spec,
+/// plus optional fields for client side updates or errors.
+class Ndt7Measurement {
+  /// If an error happened, store it here. Non-null means a failure event.
+  final String? error;
+
+  /// A Dart stack trace if available.
+  final String? stackTrace;
+
+  /// 'client' or 'server', specifying who created this measurement.
+  String? origin;
+
+  /// 'download' or 'upload' test phase.
+  String? test;
+
+  /// The application-level info. (Spec calls it AppInfo.)
+  final AppInfo? appInfo;
+
+  /// The connection-level info. (Spec calls it ConnectionInfo.)
+  final ConnectionInfo? connectionInfo;
+
+  /// Additional TCPInfo if available. (Spec calls it TCPInfo.)
+  final TCPInfo? tcpInfo;
+
+  /// Internal use to track the last binary chunk size in download.
+  final int? internalBinaryDownloadCount;
+
+  Ndt7Measurement({
+    this.error,
+    this.stackTrace,
+    this.origin,
+    this.test,
+    this.appInfo,
+    this.connectionInfo,
+    this.tcpInfo,
+    this.internalBinaryDownloadCount,
+  });
+
+  /// A synthetic measurement for counting binary message sizes (download).
+  Ndt7Measurement.internalBinaryDownload(int byteCount)
+      : error = null,
+        stackTrace = null,
+        origin = null,
+        test = null,
+        appInfo = null,
+        connectionInfo = null,
+        tcpInfo = null,
+        internalBinaryDownloadCount = byteCount;
+
+  /// Whether this measurement is effectively empty
+  bool isEmpty() {
+    return (error == null) &&
+        (stackTrace == null) &&
+        (origin == null) &&
+        (test == null) &&
+        (appInfo == null) &&
+        (connectionInfo == null) &&
+        (tcpInfo == null);
+  }
+
+  /// Parse a measurement from JSON (server-based).
+  factory Ndt7Measurement.fromJson(dynamic json) {
+    if (json is Map<String, dynamic>) {
+      return Ndt7Measurement(
+        appInfo: AppInfo.fromJson(json['AppInfo']),
+        connectionInfo: ConnectionInfo.fromJson(json['ConnectionInfo']),
+        tcpInfo: TCPInfo.fromJson(json['TCPInfo']),
+        origin: json['Origin'] as String?,
+        test: json['Test'] as String?,
+      );
+    }
+    return Ndt7Measurement(error: 'Invalid JSON type');
+  }
+
+  /// Returns an empty measurement (e.g. filtering synthetic event).
+  factory Ndt7Measurement.empty() => Ndt7Measurement();
+
+  @override
+  String toString() {
+    if (error != null) {
+      return 'Ndt7Measurement(error=$error)';
+    }
+    return 'Ndt7Measurement(origin=$origin, test=$test, appInfo=$appInfo, tcpInfo=$tcpInfo)';
+  }
+}
+
+/// AppInfo structure from the ndt7 spec, plus optional fields.
+class AppInfo {
+  /// Elapsed microseconds since the start of the test (client side).
+  final int elapsedTimeMicros;
+
+  /// Bytes transferred (client side).
+  final int numBytes;
+
+  /// Optionally store a computed mean speed in Mbps.
+  final double? meanClientMbps;
+
+  AppInfo({
+    required this.elapsedTimeMicros,
+    required this.numBytes,
+    this.meanClientMbps,
+  });
+
+  factory AppInfo.fromJson(dynamic j) {
+    if (j is Map<String, dynamic>) {
+      return AppInfo(
+        elapsedTimeMicros: (j['ElapsedTime'] ?? 0) as int,
+        numBytes: (j['NumBytes'] ?? 0) as int,
+        meanClientMbps: (j['MeanClientMbps'] as num?)?.toDouble(),
+      );
+    }
+    return AppInfo(elapsedTimeMicros: 0, numBytes: 0);
+  }
+
+  @override
+  String toString() => 'AppInfo($elapsedTimeMicros us, $numBytes bytes, '
+      '${meanClientMbps?.toStringAsFixed(2) ?? 'N/A'} Mbps)';
+}
+
+/// ConnectionInfo from the ndt7 spec
+class ConnectionInfo {
+  final String? client;
+  final String? server;
+  final String? uuid;
+
+  ConnectionInfo({this.client, this.server, this.uuid});
+
+  factory ConnectionInfo.fromJson(dynamic j) {
+    if (j is Map<String, dynamic>) {
+      return ConnectionInfo(
+        client: j['Client'] as String?,
+        server: j['Server'] as String?,
+        uuid: j['UUID'] as String?,
+      );
+    }
+    return ConnectionInfo();
+  }
+
+  @override
+  String toString() =>
+      'ConnectionInfo(client=$client, server=$server, uuid=$uuid)';
+}
+
+/// TCPInfo from the ndt7 spec, summarizing kernel-level metrics.
+class TCPInfo {
+  final int? busyTime;
+  final int? bytesAcked;
+  final int? bytesReceived;
+  final int? bytesSent;
+  final int? bytesRetrans;
+  final int? elapsedTime;
+  final int? minRTT;
+  final int? rtt;
+  final int? rttVar;
+  final int? rwndLimited;
+  final int? sndBufLimited;
+
+  TCPInfo({
+    this.busyTime,
+    this.bytesAcked,
+    this.bytesReceived,
+    this.bytesSent,
+    this.bytesRetrans,
+    this.elapsedTime,
+    this.minRTT,
+    this.rtt,
+    this.rttVar,
+    this.rwndLimited,
+    this.sndBufLimited,
+  });
+
+  factory TCPInfo.fromJson(dynamic j) {
+    if (j is Map<String, dynamic>) {
+      return TCPInfo(
+        busyTime: j['BusyTime'] as int?,
+        bytesAcked: j['BytesAcked'] as int?,
+        bytesReceived: j['BytesReceived'] as int?,
+        bytesSent: j['BytesSent'] as int?,
+        bytesRetrans: j['BytesRetrans'] as int?,
+        elapsedTime: j['ElapsedTime'] as int?,
+        minRTT: j['MinRTT'] as int?,
+        rtt: j['RTT'] as int?,
+        rttVar: j['RTTVar'] as int?,
+        rwndLimited: j['RWndLimited'] as int?,
+        sndBufLimited: j['SndBufLimited'] as int?,
+      );
+    }
+    return TCPInfo();
+  }
+
+  @override
+  String toString() =>
+      'TCPInfo(rtt=$rtt, bytesSent=$bytesSent, bytesAcked=$bytesAcked)';
+}
+
+/// A final summary object describing the entire ndt7 test run.
+class Ndt7Summary {
+  /// 'download' or 'upload'
+  final String test;
+
+  /// The final average speed in Mbit/s (client-based).
+  final double avgMbps;
+
+  /// The final average RTT in ms (based on server TCPInfo, if available).
+  final double avgRttMs;
+
+  /// A naive jitter measure in ms (std dev of the rtt samples).
+  final double jitterMs;
+
+  /// Some user-friendly scores from 0-100
+  final double downloadScore;
+  final double uploadScore;
+  final double latencyScore;
+  final double jitterScore;
+
+  Ndt7Summary({
+    required this.test,
+    required this.avgMbps,
+    required this.avgRttMs,
+    required this.jitterMs,
+    required this.downloadScore,
+    required this.uploadScore,
+    required this.latencyScore,
+    required this.jitterScore,
+  });
+
+  @override
+  String toString() {
+    return 'Ndt7Summary('
+        'test=$test, '
+        'avgMbps=${avgMbps.toStringAsFixed(2)}, '
+        'avgRttMs=${avgRttMs.toStringAsFixed(2)}, '
+        'jitterMs=${jitterMs.toStringAsFixed(2)}, '
+        'scores={down=$downloadScore, up=$uploadScore, lat=$latencyScore, jit=$jitterScore})';
+  }
+}
+
+/// A helper to compute naive "scores" from final speed or RTT or jitter.
+class Ndt7Scoring {
+  static double scoreDownload(double mbps) {
+    // e.g. if 100+ => 100, else linear 0..100
+    return (mbps >= 100.0) ? 100.0 : mbps;
+  }
+
+  static double scoreUpload(double mbps) {
+    // e.g. if 50+ => 100, else linear
+    return (mbps >= 50.0) ? 100.0 : (mbps / 50.0 * 100.0).clamp(0, 100);
+  }
+
+  static double scoreLatency(double rttMs) {
+    // e.g. if <20 => 100, >300 => 0, else linear
+    if (rttMs <= 20.0) return 100;
+    if (rttMs >= 300.0) return 0;
+    final range = 300.0 - 20.0;
+    final dist = (rttMs - 20.0) / range;
+    return (1.0 - dist) * 100.0;
+  }
+
+  static double scoreJitter(double jitMs) {
+    // e.g. if <5 => 100, >100 => 0, else linear
+    if (jitMs <= 5.0) return 100;
+    if (jitMs >= 100.0) return 0;
+    final range = 100.0 - 5.0;
+    final dist = (jitMs - 5.0) / range;
+    return (1.0 - dist) * 100.0;
+  }
+
+  static double computeStdDev(List<double> samples) {
+    if (samples.isEmpty) return 0.0;
+    final mean = samples.reduce((a, b) => a + b) / samples.length;
+    double sumSq = 0;
+    for (var s in samples) {
+      final d = s - mean;
+      sumSq += d * d;
+    }
+    final variance = sumSq / samples.length;
+    return sqrt(variance);
+  }
+}
+
+=== END: lib/src/ndt7_measurement.dart ===
+
+=== START: lib/src/universal_http.dart ===
+// lib/src/universal_http.dart
+
+import 'universal_http_base.dart';
+import 'universal_http_stub.dart'
+    if (dart.library.io) 'universal_http_io.dart'
+    if (dart.library.html) 'universal_http_html.dart';
+
+export 'universal_http_base.dart';
+export 'universal_http_stub.dart'
+    if (dart.library.io) 'universal_http_io.dart'
+    if (dart.library.html) 'universal_http_html.dart';
+
+Future<HttpResponse> universalGet(
+  String url, {
+  Map<String, String>? headers,
+}) {
+  return UniversalHttpClient.getRequest(url, headers: headers);
+}
+
+=== END: lib/src/universal_http.dart ===
+
+=== START: lib/src/universal_http_base.dart ===
+// lib/src/universal_http_base.dart
+
+/// A simple holder for an HTTP response status code and body.
+class HttpResponse {
+  final int statusCode;
+  final String? body;
+
+  HttpResponse(this.statusCode, this.body);
+}
+
+/// A minimal interface for universal HTTP GET.
+abstract class UniversalHttpClientBase {
+  static Future<HttpResponse> get(
+    String url, {
+    Map<String, String>? headers,
+  }) {
+    throw UnsupportedError(
+      'No UniversalHttpClient implementation for this platform',
+    );
+  }
+}
+
+=== END: lib/src/universal_http_base.dart ===
+
+=== START: lib/src/universal_http_html.dart ===
+// lib/src/universal_http_html.dart
+//
+// Used if dart.library.html is available (web).
+
+import 'dart:async';
+import 'dart:html';
+
+import 'universal_http_base.dart';
+
+class UniversalHttpClient implements UniversalHttpClientBase {
+  static Future<HttpResponse> getRequest(
+    String url, {
+    Map<String, String>? headers,
+  }) async {
+    print('[universal_http_html] GET => $url');
+    final req = await HttpRequest.request(
+      url,
+      method: 'GET',
+      requestHeaders: headers ?? {},
+    );
+    final sc = req.status;
+    final body = req.responseText;
+    print('[universal_http_html] statusCode=${sc ?? 0}');
+    return HttpResponse(sc ?? 0, body);
+  }
+}
+
+/// This top-level function overrides [UniversalHttpClientBase.get] at runtime
+/// on Web
+Future<HttpResponse> get(String url, {Map<String, String>? headers}) =>
+    UniversalHttpClient.getRequest(url, headers: headers);
+
+=== END: lib/src/universal_http_html.dart ===
+
+=== START: lib/src/universal_http_io.dart ===
+// lib/src/universal_http_io.dart
+//
+// Used if dart.library.io is available
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io' as io;
+
+import 'universal_http_base.dart';
+
+class UniversalHttpClient implements UniversalHttpClientBase {
+  static Future<HttpResponse> getRequest(
+    String url, {
+    Map<String, String>? headers,
+  }) async {
+    print('[universal_http_io] GET => $url');
+    final uri = Uri.parse(url);
+    final client = io.HttpClient();
+
+    try {
+      final request = await client.getUrl(uri);
+      headers?.forEach((k, v) {
+        request.headers.set(k, v);
+      });
+      final response = await request.close();
+      final sc = response.statusCode;
+      final body = await response.transform(utf8.decoder).join();
+      print('[universal_http_io] statusCode=$sc');
+      return HttpResponse(sc, body);
+    } finally {
+      client.close(force: true);
+    }
+  }
+}
+
+/// This top-level function overrides [UniversalHttpClientBase.get] at runtime
+/// when dart:io is available.
+Future<HttpResponse> get(String url, {Map<String, String>? headers}) =>
+    UniversalHttpClient.getRequest(url, headers: headers);
+
+=== END: lib/src/universal_http_io.dart ===
+
+=== START: lib/src/universal_http_stub.dart ===
+// lib/src/universal_http_stub.dart
+
+import 'dart:async';
+
+import 'universal_http_base.dart';
+
+class UniversalHttpClient implements UniversalHttpClientBase {
+  static Future<HttpResponse> getRequest(
+    String url, {
+    Map<String, String>? headers,
+  }) async {
+    // DEBUG:
+    print('[universal_http_stub] Attempting GET => $url, but stub is used!');
+    throw UnsupportedError('No HTTP implementation for this platform');
+  }
+}
+
+/// This top-level function overrides [UniversalHttpClientBase.get] at runtime
+/// if neither dart.library.io nor dart.library.html is found.
+Future<HttpResponse> get(String url, {Map<String, String>? headers}) =>
+    UniversalHttpClient.getRequest(url, headers: headers);
+
+=== END: lib/src/universal_http_stub.dart ===
+
+=== START: lib/src/universal_websocket.dart ===
+// lib/src/universal_websocket.dart
+
+import 'universal_websocket_stub.dart'
+    if (dart.library.io) 'universal_websocket_io.dart'
+    if (dart.library.html) 'universal_websocket_html.dart';
+
+export 'universal_websocket_stub.dart'
+    if (dart.library.io) 'universal_websocket_io.dart'
+    if (dart.library.html) 'universal_websocket_html.dart';
+
+/// A convenience function that calls the correct `connect` method
+/// from whichever UniversalWebSocket was chosen at compile-time.
+Future<UniversalWebSocket> universalConnect(
+  String url, {
+  Iterable<String>? protocols,
+}) {
+  print(
+      '[universal_websocket aggregator] universalConnect => $url, protocols=$protocols');
+  return UniversalWebSocket.connect(url, protocols: protocols);
+}
+
+=== END: lib/src/universal_websocket.dart ===
+
+=== START: lib/src/universal_websocket_base.dart ===
+// lib/src/universal_websocket_base.dart
+
+/// The shared interface for a universal WebSocket.
+abstract class UniversalWebSocketBase {
+  /// Connect to the specified [url] with optional [protocols].
+  static Future<UniversalWebSocketBase> connect(
+    String url, {
+    Iterable<String>? protocols,
+  }) {
+    throw UnimplementedError(
+        'UniversalWebSocketBase.connect() not implemented');
+  }
+
+  /// Sends either a String (text) or binary data over the WebSocket.
+  void send(dynamic data);
+
+  /// A stream of messages from the WebSocket.
+  /// Each message may be a String, Uint8List, or ByteBuffer.
+  Stream<dynamic> get stream;
+
+  /// Closes the underlying connection.
+  Future<void> close();
+}
+
+=== END: lib/src/universal_websocket_base.dart ===
+
+=== START: lib/src/universal_websocket_html.dart ===
+// lib/src/universal_websocket_html.dart
+//
+// Used if dart.library.html is available (web).
+import 'dart:async';
+import 'dart:html' as html;
+import 'dart:typed_data';
+
+import 'package:ndt7/src/universal_websocket_base.dart';
+
+class UniversalWebSocket extends UniversalWebSocketBase {
+  final html.WebSocket _socket;
+  final StreamController<dynamic> _controller = StreamController<dynamic>();
+
+  UniversalWebSocket._(this._socket) {
+    _socket.binaryType = 'arraybuffer';
+
+    _socket.onMessage.listen((event) {
+      final data = event.data;
+      _controller.add(data);
+    }, onError: (err, st) {
+      _controller.addError(err, st);
+      _controller.close();
+    }, onDone: () {
+      _controller.close();
+    });
+  }
+
+  static Future<UniversalWebSocket> connect(
+    String url, {
+    Iterable<String>? protocols,
+  }) {
+    print('[universal_websocket_html] connect() => $url, protocols=$protocols');
+    final completer = Completer<UniversalWebSocket>();
+    final ws = html.WebSocket(url, protocols);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onOpen.first.then((_) {
+      print('[universal_websocket_html] connect => success');
+      completer.complete(UniversalWebSocket._(ws));
+    });
+    ws.onError.first.then((_) {
+      completer.completeError('WebSocket connection failed to $url');
+    });
+
+    return completer.future;
+  }
+
+  @override
+  void send(dynamic data) {
+    if (data is String) {
+      _socket.sendString(data);
+    } else if (data is List<int>) {
+      _socket.sendByteBuffer(Uint8List.fromList(data).buffer);
+    } else if (data is Uint8List) {
+      _socket.sendByteBuffer(data.buffer);
+    } else if (data is ByteBuffer) {
+      _socket.sendByteBuffer(data);
+    }
+  }
+
+  @override
+  Stream<dynamic> get stream => _controller.stream;
+
+  @override
+  Future<void> close() async {
+    print('[universal_websocket_html] closing socket');
+    _socket.close();
+    await _controller.close();
+  }
+}
+
+=== END: lib/src/universal_websocket_html.dart ===
+
+=== START: lib/src/universal_websocket_io.dart ===
+// lib/src/universal_websocket_io.dart
+//
+// Used if dart.library.io is available (mobile, desktop).
+import 'dart:async';
+import 'dart:io' as io;
+import 'dart:typed_data';
+
+import 'package:ndt7/src/universal_websocket_base.dart';
+
+class UniversalWebSocket extends UniversalWebSocketBase {
+  final io.WebSocket _socket;
+
+  UniversalWebSocket(this._socket);
+
+  static Future<UniversalWebSocket> connect(
+    String url, {
+    Iterable<String>? protocols,
+  }) async {
+    print('[universal_websocket_io] connect() => $url, protocols=$protocols');
+    final socket = await io.WebSocket.connect(url, protocols: protocols);
+    print('[universal_websocket_io] connect => success');
+    return UniversalWebSocket(socket);
+  }
+
+  @override
+  void send(dynamic data) {
+    _socket.add(data);
+  }
+
+  @override
+  Stream<dynamic> get stream => _socket;
+
+  @override
+  Future<void> close() async {
+    print('[universal_websocket_io] closing socket');
+    await _socket.close();
+  }
+}
+
+=== END: lib/src/universal_websocket_io.dart ===
+
+=== START: lib/src/universal_websocket_stub.dart ===
+// lib/src/universal_websocket_stub.dart
+
+import 'package:ndt7/src/universal_websocket_base.dart';
+
+class UniversalWebSocket extends UniversalWebSocketBase {
+  UniversalWebSocket._();
+
+  static Future<UniversalWebSocket> connect(
+    String url, {
+    Iterable<String>? protocols,
+  }) async {
+    print('[universal_websocket_stub] connect() => $url, protocols=$protocols');
+    throw UnsupportedError(
+        'No WebSocket implementation available for this platform');
+  }
+
+  @override
+  void send(dynamic data) {
+    throw UnsupportedError('No WebSocket implementation available');
+  }
+
+  @override
+  Stream<dynamic> get stream => const Stream.empty();
+
+  @override
+  Future<void> close() async {
+    throw UnsupportedError('No WebSocket implementation available');
+  }
+}
+
+=== END: lib/src/universal_websocket_stub.dart ===
+
+=== START: lib/src/upload_isolate.dart ===
+// lib/src/upload_isolate.dart
+import 'dart:isolate';
+import 'dart:typed_data';
+import 'dart:math';
+
+class UploadMessage {
+  final int currentSize;
+  final int totalBytesSent;
+  final int elapsedMicros;
+  final Uint8List data;
+
+  UploadMessage({
+    required this.currentSize,
+    required this.totalBytesSent,
+    required this.elapsedMicros,
+    required this.data,
+  });
+}
+
+void uploadIsolateFunction(SendPort sendPort) {
+  final receivePort = ReceivePort();
+  sendPort.send(receivePort.sendPort);
+
+  int currentSize = 8192; // Initial size (8KB)
+  int totalBytesSent = 0;
+  final maxSize = 8388608; // 8MB max
+  final random = Random.secure();
+
+  receivePort.listen((message) {
+    if (message == 'generate') {
+      // Create the payload
+      final data = Uint8List(currentSize);
+      for (int i = 0; i < currentSize; i++) {
+        data[i] = random.nextInt(256);
+      }
+
+      totalBytesSent += currentSize;
+
+      // Scale up message size if needed (every 16 messages)
+      if (currentSize < maxSize) {
+        if (totalBytesSent >= 16 * currentSize) {
+          currentSize *= 2;
+          if (currentSize > maxSize) currentSize = maxSize;
+        }
+      }
+
+      // Send back the generated data and metadata
+      sendPort.send(UploadMessage(
+        currentSize: currentSize,
+        totalBytesSent: totalBytesSent,
+        elapsedMicros: DateTime.now().microsecondsSinceEpoch,
+        data: data,
+      ));
+    } else if (message == 'stop') {
+      Isolate.exit();
+    }
+  });
+}
+
+=== END: lib/src/upload_isolate.dart ===
+
+=== START: pubspec.yaml ===
+# pubspec.yaml
+name: ndt7
+description: "A new Flutter package project."
+version: 0.0.1
+homepage:
+
+environment:
+  sdk: ^3.6.1
+  flutter: ">=1.17.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  isolates_helper: ^0.5.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  change_app_package_name: ^1.4.0
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+
+  # To add assets to your package, add an assets section, like this:
+  # assets:
+  #   - images/a_dot_burr.jpeg
+  #   - images/a_dot_ham.jpeg
+  #
+  # For details regarding assets in packages, see
+  # https://flutter.dev/to/asset-from-package
+  #
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # To add custom fonts to your package, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  # fonts:
+  #   - family: Schyler
+  #     fonts:
+  #       - asset: fonts/Schyler-Regular.ttf
+  #       - asset: fonts/Schyler-Italic.ttf
+  #         style: italic
+  #   - family: Trajan Pro
+  #     fonts:
+  #       - asset: fonts/TrajanPro.ttf
+  #       - asset: fonts/TrajanPro_Bold.ttf
+  #         weight: 700
+  #
+  # For details regarding fonts in packages, see
+  # https://flutter.dev/to/font-from-package
+
+=== END: pubspec.yaml ===
+
+=== START: test/ndt7_flutter_test.dart ===
+// test/ndt7_flutter_test.dart
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:ndt7/ndt7.dart';
+
+void main() {
+  test('adds one to input values', () {
+    final calculator = Calculator();
+    expect(calculator.addOne(2), 3);
+    expect(calculator.addOne(-7), -6);
+    expect(calculator.addOne(0), 1);
+  });
+}
+
+=== END: test/ndt7_flutter_test.dart ===
+

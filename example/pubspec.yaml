@@ -1,3 +1,4 @@
+# example/pubspec.yaml
 name: ndt7_example
 description: "A new Flutter project."
 publish_to: 'none'
